@@ -1,0 +1,115 @@
+commit 5709bd414f39f82608614087e6d248dbd9142c67
+Author: Sergey Senozhatsky <sergey.senozhatsky@gmail.com>
+Date:   Tue Jan 7 23:14:54 2014 +0300
+
+    inode: suppress VFS helpers delegated inode
+    
+    NOTE: this is the first and initial version of a patch to support
+    current VFS helpers' delegated inode. normally we need to handle
+    delegation chain and use retry logic, while ignoring delegation
+    is a normal practice if we don't expect an underlying FS to be NFS
+    exported.
+    
+    The following is true for vfs_link(), vfs_unlink(), vfs_rename(),
+    notify_change():
+    
+     If vfs_link discovers a delegation on the to-be-linked file in need
+     of breaking, it will return -EWOULDBLOCK and return a reference to the
+     inode in delegated_inode.  The caller should then break the delegation
+     and retry.  Because breaking a delegation may take a long time, the
+     caller should drop the i_mutex before doing so.
+    
+     Alternatively, a caller may pass NULL for delegated_inode.  This may
+     be appropriate for callers that expect the underlying filesystem not
+     to be NFS exported.
+    
+    Signed-off-by: Sergey Senozhatsky <sergey.senozhatsky@gmail.com>
+---
+ src/pluginfs/inode.c | 18 +++++++++---------
+ 1 file changed, 9 insertions(+), 9 deletions(-)
+
+diff --git a/src/pluginfs/inode.c b/src/pluginfs/inode.c
+index 8aba2cf..7509329 100644
+--- a/src/pluginfs/inode.c
++++ b/src/pluginfs/inode.c
+@@ -129,7 +129,7 @@ static int plgfs_dir_iop_create(struct inode *ip, struct dentry *d,
+ 	i = plgfs_iget(ip->i_sb, (unsigned long)dh->d_inode);
+ 	if (IS_ERR(i)) {
+ 		mutex_lock_nested(&iph->i_mutex, I_MUTEX_PARENT);
+-		rv = vfs_unlink(iph, dh);
++		rv = vfs_unlink(iph, dh, NULL);
+ 		mutex_unlock(&iph->i_mutex);
+ 		if (rv)
+ 			pr_err("pluginfs: create: unlink failed: %d\n", rv);
+@@ -189,7 +189,7 @@ static int plgfs_iop_setattr(struct dentry *d, struct iattr *ia, int op_id)
+ 	dh = plgfs_dh(d);
+ 
+ 	mutex_lock(&dh->d_inode->i_mutex);
+-	cont->op_rv.rv_int = notify_change(dh, ia);
++	cont->op_rv.rv_int = notify_change(dh, ia, NULL);
+ 	mutex_unlock(&dh->d_inode->i_mutex);
+ 
+ 	fsstack_copy_attr_all(d->d_inode, dh->d_inode);
+@@ -309,7 +309,7 @@ static int plgfs_dir_iop_unlink(struct inode *ip, struct dentry *d)
+ 	ih = plgfs_dh(d)->d_inode;
+ 
+ 	mutex_lock_nested(&iph->i_mutex, I_MUTEX_PARENT);
+-	cont->op_rv.rv_int = vfs_unlink(iph, plgfs_dh(d));
++	cont->op_rv.rv_int = vfs_unlink(iph, plgfs_dh(d), NULL);
+ 	mutex_unlock(&iph->i_mutex);
+ 
+ 	fsstack_copy_attr_times(ip, iph);
+@@ -365,7 +365,7 @@ static int plgfs_dir_iop_mkdir(struct inode *ip, struct dentry *d, umode_t m)
+ 	i = plgfs_iget(ip->i_sb, (unsigned long)dh->d_inode);
+ 	if (IS_ERR(i)) {
+ 		mutex_lock_nested(&iph->i_mutex, I_MUTEX_PARENT);
+-		rv = vfs_unlink(iph, dh);
++		rv = vfs_unlink(iph, dh, NULL);
+ 		mutex_unlock(&iph->i_mutex);
+ 		if (rv)
+ 			pr_err("pluginfs: mkdir: unlink failed: %d\n", rv);
+@@ -475,7 +475,7 @@ static int plgfs_dir_iop_rename(struct inode *oi, struct dentry *od,
+ 		goto unlock;
+ 	}
+ 
+-	cont->op_rv.rv_int = vfs_rename(oih, odh, nih, ndh);
++	cont->op_rv.rv_int = vfs_rename(oih, odh, nih, ndh, NULL);
+ 	if (cont->op_rv.rv_int)
+ 		goto unlock;
+ 
+@@ -534,7 +534,7 @@ static int plgfs_dir_iop_symlink(struct inode *ip, struct dentry *d,
+ 	i = plgfs_iget(ip->i_sb, (unsigned long)dh->d_inode);
+ 	if (IS_ERR(i)) {
+ 		mutex_lock_nested(&iph->i_mutex, I_MUTEX_PARENT);
+-		rv = vfs_unlink(iph, dh);
++		rv = vfs_unlink(iph, dh, NULL);
+ 		mutex_unlock(&iph->i_mutex);
+ 		if (rv)
+ 			pr_err("pluginfs: symlink: unlink failed: %d\n", rv);
+@@ -721,7 +721,7 @@ static int plgfs_dir_iop_mknod(struct inode *ip, struct dentry *d, umode_t mode,
+ 	i = plgfs_iget(ip->i_sb, (unsigned long)dh->d_inode);
+ 	if (IS_ERR(i)) {
+ 		mutex_lock_nested(&iph->i_mutex, I_MUTEX_PARENT);
+-		rv = vfs_unlink(iph, dh);
++		rv = vfs_unlink(iph, dh, NULL);
+ 		mutex_unlock(&iph->i_mutex);
+ 		if (rv)
+ 			pr_err("pluginfs: mknod: unlink failed: %d\n", rv);
+@@ -772,7 +772,7 @@ static int plgfs_dir_iop_link(struct dentry *dold, struct inode *ip,
+ 	iph = plgfs_ih(ip);
+ 
+ 	mutex_lock_nested(&iph->i_mutex, I_MUTEX_PARENT);
+-	cont->op_rv.rv_int = vfs_link(plgfs_dh(dold), iph, plgfs_dh(dnew));
++	cont->op_rv.rv_int = vfs_link(plgfs_dh(dold), iph, plgfs_dh(dnew), NULL);
+ 	mutex_unlock(&iph->i_mutex);
+ 
+ 	if (cont->op_rv.rv_int)
+@@ -781,7 +781,7 @@ static int plgfs_dir_iop_link(struct dentry *dold, struct inode *ip,
+ 	i = plgfs_iget(ip->i_sb, (unsigned long)plgfs_dh(dnew)->d_inode);
+ 	if (IS_ERR(i)) {
+ 		mutex_lock_nested(&iph->i_mutex, I_MUTEX_PARENT);
+-		rv = vfs_unlink(iph, plgfs_dh(dnew));
++		rv = vfs_unlink(iph, plgfs_dh(dnew), NULL);
+ 		mutex_unlock(&iph->i_mutex);
+ 		if (rv)
+ 			pr_err("pluginfs: link: unlink failed: %d\n", rv);
